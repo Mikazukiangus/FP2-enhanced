@@ -1,0 +1,6 @@
+{
+  "name": "Pantry Lane Online Singapore",
+  "description": "Shop groceries online at Pantry Lane Singapore. Enjoy fresh produce, pantry essentials, weekly promotions, Top Picks deals, Lane Points rewards, and free delivery for orders $59 and above.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
