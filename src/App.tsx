@@ -1,32 +1,34 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Apple,
-  Award,
   ChevronLeft,
   ChevronRight,
-  Cookie,
-  Croissant,
-  CupSoda,
-  Fish,
-  Milk,
-  Sparkles,
-  Tag,
-  Truck,
-  Wheat,
 } from 'lucide-react';
 import {
   calculateItemTotal,
-  CATEGORIES,
+  calculateScaledPacks,
+  Category,
+  DEFAULT_PANTRY_PRODUCT_IDS,
   DELIVERY_SLOTS,
   DeliverySlot,
   HERO_SLIDES,
   Product,
   PRODUCTS,
+  RecipeItem,
+  RECIPES,
   STORE_OUTLETS,
   StoreOutlet,
+  VoucherItem,
 } from './data/catalog';
 import { ActivePage, Header } from './components/Header';
-import { ProductCard } from './components/ProductCard';
+import { TopCategoriesBar } from './components/TopCategoriesBar';
+import { MealPlannerSection, PlannedMeal } from './components/MealPlannerSection';
+import { RecipeDetailModal } from './components/RecipeDetailModal';
+import { ShoppingListDrawer } from './components/ShoppingListDrawer';
+import {
+  ConsolidatedProductGrid,
+  getProductsForIntent,
+  VouchersPanel,
+} from './components/IntentPanels';
 import { CartDrawer } from './components/CartDrawer';
 import { Footer } from './components/Footer';
 import {
@@ -40,25 +42,25 @@ import {
 import {
   CatalogView,
   DigitalClubView,
-  RecipesView,
-  WeeklyAdsView,
 } from './components/SecondaryViews';
 
-const CATEGORY_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
-  apple: Apple,
-  milk: Milk,
-  fish: Fish,
-  wheat: Wheat,
-  croissant: Croissant,
-  cup: CupSoda,
-  sparkles: Sparkles,
-  cookie: Cookie,
-};
+type IntentTab = 'meal-planner' | 'promos' | 'limited-time' | 'vouchers' | 'wine-list';
+
+const INTENT_TILES: { id: IntentTab; label: string; sublabel: string }[] = [
+  { id: 'meal-planner', label: 'MEAL PLANNER', sublabel: 'Recipes & portions' },
+  { id: 'promos', label: 'PROMOS', sublabel: 'Bestsellers & deals' },
+  { id: 'limited-time', label: 'LIMITED TIME ONLY', sublabel: '4-day specials' },
+  { id: 'vouchers', label: 'VOUCHERS', sublabel: 'Claim & save' },
+  { id: 'wine-list', label: 'WINE LIST', sublabel: 'Dinner pairings' },
+];
 
 export default function App() {
   const [activePage, setActivePage] = useState<ActivePage>('home');
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const [activeIntent, setActiveIntent] = useState<IntentTab>('meal-planner');
   const [searchQuery, setSearchQuery] = useState('');
+
+  const intentSectionRef = useRef<HTMLDivElement>(null);
 
   const [cart, setCart] = useState<Record<string, number>>(() => {
     try {
@@ -78,6 +80,30 @@ export default function App() {
     }
   });
 
+  // "What I Already Have" Pantry State
+  const [pantryIds, setPantryIds] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('fp_sg_pantry');
+      return saved ? JSON.parse(saved) : DEFAULT_PANTRY_PRODUCT_IDS;
+    } catch {
+      return DEFAULT_PANTRY_PRODUCT_IDS;
+    }
+  });
+
+  // Weekly Meal Plan State (pre-seeded with 1 popular meal so Smart Shopping List works immediately)
+  const [mealPlan, setMealPlan] = useState<PlannedMeal[]>(() => {
+    try {
+      const saved = localStorage.getItem('fp_sg_meal_plan');
+      return saved ? JSON.parse(saved) : [{ recipeId: 'rec-seabass', servings: 4 }];
+    } catch {
+      return [{ recipeId: 'rec-seabass', servings: 4 }];
+    }
+  });
+
+  // Claimed Vouchers & Active Voucher Code
+  const [claimedVouchers, setClaimedVouchers] = useState<string[]>(['WELCOME5']);
+  const [activeVoucherCode, setActiveVoucherCode] = useState<string | null>(null);
+
   const [postalCode, setPostalCode] = useState('238801');
   const [fulfillmentMode, setFulfillmentMode] = useState<'delivery' | 'collect'>('delivery');
   const [selectedSlot, setSelectedSlot] = useState<DeliverySlot>(DELIVERY_SLOTS[0]);
@@ -92,17 +118,21 @@ export default function App() {
 
   // UI Overlays
   const [cartOpen, setCartOpen] = useState(false);
+  const [shoppingListOpen, setShoppingListOpen] = useState(false);
+  const [shoppingListTab, setShoppingListTab] = useState<'list' | 'pantry' | 'saved'>('list');
   const [deliveryModalOpen, setDeliveryModalOpen] = useState(false);
   const [storeLocatorOpen, setStoreLocatorOpen] = useState(false);
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [selectedRecipeState, setSelectedRecipeState] = useState<{
+    recipe: RecipeItem;
+    servings?: number;
+  } | null>(null);
   const [checkoutSummary, setCheckoutSummary] = useState<CheckoutSummary | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Homepage Carousel & Tabs
+  // Adverts Carousel
   const [heroIndex, setHeroIndex] = useState(0);
-  const [freshTab, setFreshTab] = useState<'all' | 'fruits-vegetables' | 'dairy-chilled-eggs' | 'meat-seafood'>('all');
-  const [pantryTab, setPantryTab] = useState<'all' | 'rice-noodles-cooking' | 'drinks' | 'household'>('all');
 
   useEffect(() => {
     try {
@@ -121,6 +151,22 @@ export default function App() {
   }, [wishlist]);
 
   useEffect(() => {
+    try {
+      localStorage.setItem('fp_sg_pantry', JSON.stringify(pantryIds));
+    } catch {
+      // ignore storage quota
+    }
+  }, [pantryIds]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('fp_sg_meal_plan', JSON.stringify(mealPlan));
+    } catch {
+      // ignore storage quota
+    }
+  }, [mealPlan]);
+
+  useEffect(() => {
     const timer = setInterval(() => {
       setHeroIndex((prev) => (prev + 1) % HERO_SLIDES.length);
     }, 6500);
@@ -131,7 +177,7 @@ export default function App() {
     setToastMessage(msg);
     setTimeout(() => {
       setToastMessage((current) => (current === msg ? null : current));
-    }, 2600);
+    }, 2800);
   };
 
   const { cartCount, cartSubtotal } = useMemo(() => {
@@ -149,6 +195,22 @@ export default function App() {
     return { cartCount: count, cartSubtotal: Number(total.toFixed(2)) };
   }, [cart]);
 
+  // Count distinct needed items across all planned meals (excluding pantry staples)
+  const shoppingListNeededCount = useMemo(() => {
+    const neededSet = new Set<string>();
+    mealPlan.forEach((pm) => {
+      const rec = RECIPES.find((r) => r.id === pm.recipeId);
+      if (!rec) return;
+      rec.ingredients.forEach((ing) => {
+        if (!pantryIds.includes(ing.productId)) {
+          const packs = calculateScaledPacks(ing.packsPerBase, rec.baseServings, pm.servings);
+          if (packs > 0) neededSet.add(ing.productId);
+        }
+      });
+    });
+    return neededSet.size;
+  }, [mealPlan, pantryIds]);
+
   const deliverySummary =
     fulfillmentMode === 'delivery'
       ? `${selectedSlot.dayLabel}, ${selectedSlot.window}`
@@ -157,6 +219,18 @@ export default function App() {
   const handleAddToCart = (product: Product) => {
     setCart((prev) => ({ ...prev, [product.id]: (prev[product.id] || 0) + 1 }));
     showToast(`Added ${product.name} to cart`);
+  };
+
+  const handleAddItemsToCart = (items: { productId: string; qty: number }[], label: string) => {
+    setCart((prev) => {
+      const next = { ...prev };
+      items.forEach(({ productId, qty }) => {
+        next[productId] = (next[productId] || 0) + qty;
+      });
+      return next;
+    });
+    showToast(`Added ${label} to cart`);
+    setCartOpen(true);
   };
 
   const handleUpdateQty = (productId: string, delta: number) => {
@@ -179,24 +253,57 @@ export default function App() {
     });
   };
 
-  const handleAddMultiple = (productIds: string[]) => {
-    setCart((prev) => {
-      const next = { ...prev };
-      productIds.forEach((id) => {
-        next[id] = (next[id] || 0) + 1;
-      });
-      return next;
-    });
-    showToast(`Added ${productIds.length} recipe ingredients to your cart`);
-    setCartOpen(true);
-  };
-
   const handleToggleWishlist = (productId: string) => {
     setWishlist((prev) => {
       const exists = prev.includes(productId);
-      showToast(exists ? 'Removed from Shopping List' : 'Saved to Shopping List');
+      showToast(exists ? 'Removed from Saved Items' : 'Saved for quick reordering');
       return exists ? prev.filter((id) => id !== productId) : [...prev, productId];
     });
+  };
+
+  const handleTogglePantry = (productId: string) => {
+    const product = PRODUCTS.find((p) => p.id === productId);
+    setPantryIds((prev) => {
+      const exists = prev.includes(productId);
+      if (product) {
+        showToast(
+          exists
+            ? `Moved ${product.name} back to Need to Buy`
+            : `Marked ${product.name} as Already Have in Pantry`
+        );
+      }
+      return exists ? prev.filter((id) => id !== productId) : [...prev, productId];
+    });
+  };
+
+  const handleToggleMealInPlan = (recipe: RecipeItem, servings: number) => {
+    setMealPlan((prev) => {
+      const exists = prev.some((m) => m.recipeId === recipe.id);
+      if (exists) {
+        showToast(`Removed "${recipe.title}" from Meal Plan`);
+        return prev.filter((m) => m.recipeId !== recipe.id);
+      }
+      showToast(`Added "${recipe.title}" (${servings} servings) to Meal Plan`);
+      return [...prev, { recipeId: recipe.id, servings }];
+    });
+  };
+
+  const handleUpdateMealServings = (recipeId: string, servings: number) => {
+    setMealPlan((prev) =>
+      prev.map((m) => (m.recipeId === recipeId ? { ...m, servings } : m))
+    );
+  };
+
+  const handleRemoveMeal = (recipeId: string) => {
+    setMealPlan((prev) => prev.filter((m) => m.recipeId !== recipeId));
+  };
+
+  const handleClaimAndApplyVoucher = (voucher: VoucherItem) => {
+    if (!claimedVouchers.includes(voucher.code)) {
+      setClaimedVouchers((prev) => [...prev, voucher.code]);
+    }
+    setActiveVoucherCode(voucher.code);
+    showToast(`Voucher ${voucher.code} applied to your cart`);
   };
 
   const handleNavigate = (page: ActivePage, categoryId: string | null = null) => {
@@ -205,10 +312,28 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  const handleSelectTopCategory = (cat: Category) => {
+    setActivePage('category');
+    setActiveCategory(cat.id);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleSelectIntent = (intent: IntentTab, scroll = false) => {
+    setActivePage('home');
+    setActiveCategory(null);
+    setActiveIntent(intent);
+    if (scroll) {
+      setTimeout(() => {
+        intentSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 60);
+    }
+  };
+
   const handleSearchSubmit = (q: string) => {
     setSearchQuery(q);
     if (q.trim()) {
       setActivePage('search');
+      setActiveCategory(null);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } else {
       setActivePage('home');
@@ -234,34 +359,12 @@ export default function App() {
     }
   };
 
-  const mustBuyProducts = useMemo(
-    () => PRODUCTS.filter((p) => p.isFeatured).slice(0, 10),
-    []
-  );
-
-  const freshMarketProducts = useMemo(() => {
-    const freshCats = ['fruits-vegetables', 'dairy-chilled-eggs', 'meat-seafood'];
-    const list = PRODUCTS.filter((p) =>
-      freshTab === 'all' ? freshCats.includes(p.category) : p.category === freshTab
-    );
-    return list.slice(0, 5);
-  }, [freshTab]);
-
-  const pantryProducts = useMemo(() => {
-    const pantryCats = ['rice-noodles-cooking', 'drinks', 'household', 'bakery', 'snacks-confectionery'];
-    const list = PRODUCTS.filter((p) =>
-      pantryTab === 'all' ? pantryCats.includes(p.category) : p.category === pantryTab
-    );
-    return list.slice(0, 5);
-  }, [pantryTab]);
-
   const currentSlide = HERO_SLIDES[heroIndex];
 
   return (
     <div className="min-h-screen flex flex-col bg-[#F5F6F8] text-[#1A1D23]">
+      {/* 1. STREAMLINED SINGLE-ROW HEADER */}
       <Header
-        activePage={activePage}
-        activeCategory={activeCategory}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         onSearchSubmit={handleSearchSubmit}
@@ -271,119 +374,131 @@ export default function App() {
         onOpenDelivery={() => setDeliveryModalOpen(true)}
         onOpenCart={() => setCartOpen(true)}
         onOpenAccount={() => setAccountModalOpen(true)}
-        onOpenStoreLocator={() => setStoreLocatorOpen(true)}
+        onOpenShoppingList={() => {
+          setShoppingListTab('list');
+          setShoppingListOpen(true);
+        }}
         onSelectProduct={(p) => setSelectedProduct(p)}
+        onSelectRecipe={(r) => setSelectedRecipeState({ recipe: r })}
         cartCount={cartCount}
         cartSubtotal={cartSubtotal}
-        wishlistCount={wishlist.length}
+        shoppingListNeededCount={shoppingListNeededCount}
+        plannedMealsCount={mealPlan.length}
         isSignedIn={isSignedIn}
-        linkpoints={linkpoints}
-        isDigitalClub={isDigitalClub}
+      />
+
+      {/* 2. IMMEDIATE TOP CATEGORIES RAIL (Always Immediately Reachable) */}
+      <TopCategoriesBar
+        activeCategoryId={activePage === 'category' ? activeCategory : null}
+        onSelectCategory={handleSelectTopCategory}
       />
 
       <main className="flex-1">
         {activePage === 'home' && (
-          <div className="max-w-[1280px] mx-auto px-4 lg:px-6 pt-5 space-y-8">
-            {/* 1. HERO PROMOTIONAL CAROUSEL */}
-            <section aria-label="Featured Promotions" className="relative rounded-2xl overflow-hidden bg-[#134E4A] shadow-sm">
-              <div className="relative h-[340px] sm:h-[380px] lg:h-[410px] w-full">
+          <div className="max-w-[1280px] mx-auto px-4 lg:px-6 pt-5 space-y-6">
+            {/* 3. FOCUSED ADVERTS CAROUSEL BANNER (No Scattered Competing Promos) */}
+            <section aria-label="Featured Adverts">
+              <div className="relative rounded-2xl overflow-hidden bg-[#134E4A] h-[230px] sm:h-[275px] lg:h-[300px]">
                 <img
                   src={currentSlide.image}
                   alt={currentSlide.title}
                   referrerPolicy="no-referrer"
                   className="w-full h-full object-cover object-center"
                 />
-                {/* Measured Scrim for Crisp WCAG AA Contrast */}
-                <div className="absolute inset-0 bg-gradient-to-r from-[#042F2E]/95 via-[#134E4A]/80 to-[#134E4A]/15" />
+                {/* Crisp Contrast Scrim */}
+                <div className="absolute inset-0 bg-gradient-to-r from-[#042F2E]/92 via-[#134E4A]/78 to-[#134E4A]/20" />
 
                 <div className="absolute inset-0 flex items-center">
-                  <div className="px-6 sm:px-10 lg:px-14 max-w-[600px] text-white">
-                    <div className="text-xs sm:text-sm font-bold text-[#5EEAD4] tracking-wide">
+                  <div className="px-6 sm:px-10 lg:px-12 max-w-[640px] text-white">
+                    <div className="text-xs font-bold text-[#5EEAD4]">
                       {currentSlide.eyebrow}
                     </div>
-                    <h1 className="text-2xl sm:text-4xl lg:text-[42px] font-extrabold leading-[1.12] tracking-tight mt-2 text-balance">
+                    <h1 className="text-xl sm:text-3xl lg:text-[34px] font-extrabold leading-[1.15] tracking-tight mt-1.5 text-balance">
                       {currentSlide.title}
                     </h1>
-                    <p className="text-sm sm:text-[15px] text-white/90 mt-3 leading-relaxed max-w-[500px]">
+                    <p className="text-xs sm:text-sm text-white/90 mt-2 leading-relaxed max-w-[520px] hidden sm:block">
                       {currentSlide.subtitle}
                     </p>
-                    <div className="mt-6 flex flex-wrap items-center gap-3">
+                    <div className="mt-4">
                       <button
                         type="button"
-                        onClick={() =>
-                          handleNavigate(currentSlide.targetView, currentSlide.targetCategory ?? null)
-                        }
-                        className="px-6 py-3 rounded-lg bg-[#EA580C] hover:bg-[#C2410C] text-white text-sm font-bold transition-colors shadow-sm"
+                        onClick={() => handleSelectIntent(currentSlide.targetIntent, true)}
+                        className="px-5 py-2.5 rounded-lg bg-[#EA580C] hover:bg-[#C2410C] text-white text-xs sm:text-sm font-bold transition-colors"
                       >
                         {currentSlide.ctaLabel}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleNavigate('weekly-ads', null)}
-                        className="px-5 py-3 rounded-lg bg-white/15 hover:bg-white/25 backdrop-blur-xs text-white text-sm font-bold transition-colors"
-                      >
-                        View Weekly Ads
                       </button>
                     </div>
                   </div>
                 </div>
 
-                {/* Carousel Controls */}
+                {/* Carousel Prev / Next */}
                 <button
                   type="button"
                   onClick={() =>
                     setHeroIndex((prev) => (prev - 1 + HERO_SLIDES.length) % HERO_SLIDES.length)
                   }
-                  aria-label="Previous promotion"
-                  className="hidden sm:flex absolute left-3 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-white/90 hover:bg-white text-[#134E4A] items-center justify-center shadow-md transition-colors"
+                  aria-label="Previous advert"
+                  className="hidden sm:flex absolute left-3 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white/90 hover:bg-white text-[#134E4A] items-center justify-center shadow-sm transition-colors"
                 >
-                  <ChevronLeft className="w-5 h-5" />
+                  <ChevronLeft className="w-4 h-4" />
                 </button>
                 <button
                   type="button"
                   onClick={() => setHeroIndex((prev) => (prev + 1) % HERO_SLIDES.length)}
-                  aria-label="Next promotion"
-                  className="hidden sm:flex absolute right-3 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-white/90 hover:bg-white text-[#134E4A] items-center justify-center shadow-md transition-colors"
+                  aria-label="Next advert"
+                  className="hidden sm:flex absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white/90 hover:bg-white text-[#134E4A] items-center justify-center shadow-sm transition-colors"
                 >
-                  <ChevronRight className="w-5 h-5" />
+                  <ChevronRight className="w-4 h-4" />
                 </button>
+              </div>
 
-                {/* Pagination Indicators */}
-                <div className="absolute bottom-4 left-6 sm:left-10 lg:left-14 flex items-center gap-2">
-                  {HERO_SLIDES.map((s, idx) => (
-                    <button
-                      key={s.id}
-                      type="button"
-                      onClick={() => setHeroIndex(idx)}
-                      aria-label={`Show slide ${idx + 1}`}
-                      className={`h-2 rounded-full transition-all ${
-                        idx === heroIndex ? 'w-7 bg-white' : 'w-2 bg-white/45 hover:bg-white/75'
-                      }`}
-                    />
-                  ))}
-                </div>
+              {/* Clean Pagination Dots Directly Below Banner */}
+              <div className="flex items-center justify-center gap-2 mt-2.5">
+                {HERO_SLIDES.map((s, idx) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => setHeroIndex(idx)}
+                    aria-label={`Show advert ${idx + 1}`}
+                    className={`h-2 rounded-full transition-all ${
+                      idx === heroIndex
+                        ? 'w-6 bg-[#0F766E]'
+                        : 'w-2 bg-[#CBD5E1] hover:bg-[#94A3B8]'
+                    }`}
+                  />
+                ))}
               </div>
             </section>
 
-            {/* 2. SHOP BY DEPARTMENT QUICK ICON RAIL */}
-            <section aria-label="Shop by Category">
-              <div className="grid grid-cols-4 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-                {CATEGORIES.map((cat) => {
-                  const Icon = CATEGORY_ICONS[cat.iconKey] || Tag;
+            {/* 4. FIVE CONSUMER-INTENT NAVIGATION TILES (Matches Wireframe Hierarchy) */}
+            <section
+              ref={intentSectionRef}
+              aria-label="Choose Shopping Intent"
+              className="scroll-mt-20"
+            >
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                {INTENT_TILES.map((tile) => {
+                  const isActive = activeIntent === tile.id;
                   return (
                     <button
-                      key={cat.id}
+                      key={tile.id}
                       type="button"
-                      onClick={() => handleNavigate('category', cat.id)}
-                      className="group bg-white rounded-xl border border-[#E5E8EE] hover:border-[#0F766E] p-3.5 flex flex-col items-center text-center transition-all hover:shadow-sm"
+                      onClick={() => setActiveIntent(tile.id)}
+                      className={`h-[92px] sm:h-[104px] px-4 rounded-2xl border text-center flex flex-col items-center justify-center transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0F766E] ${
+                        isActive
+                          ? 'bg-[#134E4A] border-[#134E4A] text-white shadow-sm'
+                          : 'bg-[#E6F4F1] border-[#CBE7E1] text-[#134E4A] hover:bg-[#D5EFE9] hover:border-[#0F766E]/50'
+                      }`}
                     >
-                      <div
-                        className={`w-11 h-11 rounded-full ${cat.accentBg} ${cat.accentText} flex items-center justify-center mb-2 group-hover:scale-105 transition-transform`}
+                      <span className="text-xs sm:text-sm font-extrabold tracking-wide leading-tight">
+                        {tile.label}
+                      </span>
+                      <span
+                        className={`text-[11px] mt-1 font-medium ${
+                          isActive ? 'text-[#99F6E4]' : 'text-[#3F6B66]'
+                        }`}
                       >
-                        <Icon className="w-5 h-5" />
-                      </div>
-                      <span className="text-xs font-bold text-[#1A1D23] group-hover:text-[#0F766E] leading-tight">
-                        {cat.shortName}
+                        {tile.sublabel}
                       </span>
                     </button>
                   );
@@ -391,227 +506,112 @@ export default function App() {
               </div>
             </section>
 
-            {/* 3. MUST BUY THIS WEEK SECTION */}
-            <section aria-label="Top Picks This Week">
-              <div className="flex items-end justify-between gap-4 mb-4">
-                <div>
-                  <h2 className="text-xl sm:text-2xl font-extrabold text-[#1A1D23] tracking-tight">
-                    Top Picks This Week
-                  </h2>
-                  <p className="text-xs sm:text-sm text-[#5A6270] mt-0.5">
-                    Weekly Thursday – Wednesday price drops and bundle offers across Singapore favourites
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleNavigate('must-buy', null)}
-                  className="text-xs sm:text-sm font-bold text-[#0F766E] hover:underline whitespace-nowrap shrink-0 flex items-center gap-0.5"
-                >
-                  <span>View all</span>
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
+            {/* 5. ACTIVE INTENT WORKSPACE (Meal Planner default, or Promos / Limited Time / Vouchers / Wine List) */}
+            <section aria-label="Active Workspace">
+              {activeIntent === 'meal-planner' && (
+                <MealPlannerSection
+                  mealPlan={mealPlan}
+                  pantryIds={pantryIds}
+                  shoppingListNeededCount={shoppingListNeededCount}
+                  onToggleMealInPlan={handleToggleMealInPlan}
+                  onUpdateMealServings={handleUpdateMealServings}
+                  onSelectRecipe={(recipe, servings) =>
+                    setSelectedRecipeState({ recipe, servings })
+                  }
+                  onOpenShoppingList={(tab = 'list') => {
+                    setShoppingListTab(tab);
+                    setShoppingListOpen(true);
+                  }}
+                />
+              )}
 
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-                {mustBuyProducts.map((product) => (
-                  <ProductCard
-                    key={product.id}
-                    product={product}
-                    quantity={cart[product.id] || 0}
-                    isWishlisted={wishlist.includes(product.id)}
-                    onAdd={handleAddToCart}
-                    onUpdateQty={handleUpdateQty}
-                    onToggleWishlist={handleToggleWishlist}
-                    onOpenDetail={setSelectedProduct}
-                  />
-                ))}
-              </div>
+              {activeIntent === 'promos' && (
+                <ConsolidatedProductGrid
+                  title="Weekly Promotions & Bundle Deals"
+                  subtitle="Filter bestsellers, top-rated favourites, and multi-buy bundles in one clean view"
+                  products={getProductsForIntent('promos')}
+                  cart={cart}
+                  wishlist={wishlist}
+                  pantryIds={pantryIds}
+                  onAdd={handleAddToCart}
+                  onUpdateQty={handleUpdateQty}
+                  onToggleWishlist={handleToggleWishlist}
+                  onOpenDetail={setSelectedProduct}
+                />
+              )}
+
+              {activeIntent === 'limited-time' && (
+                <ConsolidatedProductGrid
+                  title="Limited Time Only · 4-Day Specials"
+                  subtitle="Fresh market price cuts valid Thursday – Sunday while stocks last"
+                  products={getProductsForIntent('limited-time')}
+                  cart={cart}
+                  wishlist={wishlist}
+                  pantryIds={pantryIds}
+                  onAdd={handleAddToCart}
+                  onUpdateQty={handleUpdateQty}
+                  onToggleWishlist={handleToggleWishlist}
+                  onOpenDetail={setSelectedProduct}
+                />
+              )}
+
+              {activeIntent === 'vouchers' && (
+                <VouchersPanel
+                  claimedVouchers={claimedVouchers}
+                  activeVoucherCode={activeVoucherCode}
+                  onClaimAndApply={handleClaimAndApplyVoucher}
+                />
+              )}
+
+              {activeIntent === 'wine-list' && (
+                <ConsolidatedProductGrid
+                  title="Curated Wine List & Zero-Proof Pairings"
+                  subtitle="Hand-picked bottles and alcohol-free cuvées matched to our Meal Planner dishes"
+                  products={getProductsForIntent('wine-list')}
+                  cart={cart}
+                  wishlist={wishlist}
+                  pantryIds={pantryIds}
+                  showWineFilter
+                  onAdd={handleAddToCart}
+                  onUpdateQty={handleUpdateQty}
+                  onToggleWishlist={handleToggleWishlist}
+                  onOpenDetail={setSelectedProduct}
+                />
+              )}
             </section>
 
-            {/* 4. MID-PAGE VALUE & MEMBERSHIP STRIP (2-COLUMN) */}
-            <section aria-label="Member Benefits" className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="bg-white rounded-2xl border border-[#E5E8EE] p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div className="space-y-1.5">
-                  <div className="text-xs font-bold text-[#EA580C] flex items-center gap-1.5">
-                    <Award className="w-4 h-4" />
-                    <span>Lane Rewards &amp; Lane Card</span>
-                  </div>
-                  <h3 className="text-lg font-extrabold text-[#1A1D23]">
-                    Earn &amp; Offset Lane Points on Every Cart
-                  </h3>
-                  <p className="text-xs text-[#5A6270] leading-relaxed max-w-sm">
-                    Use promo code <strong className="text-[#1A1D23]">WELCOME5</strong> for $5 off orders $30+ or redeem 500 Lane Points directly at checkout.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setAccountModalOpen(true)}
-                  className="px-4 py-2.5 rounded-lg bg-[#F0FDFA] hover:bg-[#0F766E] text-[#0F766E] hover:text-white text-xs font-bold transition-colors whitespace-nowrap shrink-0"
-                >
-                  View Lane Points
-                </button>
-              </div>
-
-              <div className="bg-[#134E4A] text-white rounded-2xl p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div className="space-y-1.5">
-                  <div className="text-xs font-bold text-[#5EEAD4] flex items-center gap-1.5">
-                    <Truck className="w-4 h-4" />
-                    <span>Pantry Lane Lane Plus</span>
-                  </div>
-                  <h3 className="text-lg font-extrabold">
-                    Enjoy $0 Delivery Fees All Month Long
-                  </h3>
-                  <p className="text-xs text-white/80 leading-relaxed max-w-sm">
-                    Get unlimited free delivery with zero minimum spend, 2x bonus Lane Points, and exclusive member vouchers.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleNavigate('digital-club', null)}
-                  className="px-4 py-2.5 rounded-lg bg-white text-[#134E4A] hover:bg-[#F0FDFA] text-xs font-bold transition-colors whitespace-nowrap shrink-0"
-                >
-                  {isDigitalClub ? 'Manage Club' : 'Try 30 Days Free'}
-                </button>
-              </div>
-            </section>
-
-            {/* 5. FRESH MARKET SECTION WITH INTERACTIVE FILTER TABS */}
-            <section aria-label="Fresh Market">
-              <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3 mb-4">
-                <div>
-                  <h2 className="text-xl sm:text-2xl font-extrabold text-[#1A1D23] tracking-tight">
-                    Fresh Market &amp; Chilled Favourites
-                  </h2>
-                  <p className="text-xs sm:text-sm text-[#5A6270] mt-0.5">
-                    Air-flown seafood, crisp orchard produce, and local farm eggs chilled to your doorstep
-                  </p>
-                </div>
-                <div className="flex items-center gap-1 p-1 bg-white border border-[#E5E8EE] rounded-lg overflow-x-auto no-scrollbar">
-                  {[
-                    { id: 'all', label: 'All Fresh' },
-                    { id: 'fruits-vegetables', label: 'Fruits & Veg' },
-                    { id: 'dairy-chilled-eggs', label: 'Dairy & Eggs' },
-                    { id: 'meat-seafood', label: 'Meat & Seafood' },
-                  ].map((tab) => (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      onClick={() => setFreshTab(tab.id as typeof freshTab)}
-                      className={`px-3 py-1.5 rounded-md text-xs font-bold transition-colors whitespace-nowrap shrink-0 ${
-                        freshTab === tab.id
-                          ? 'bg-[#0F766E] text-white'
-                          : 'text-[#4B5563] hover:text-[#0F766E]'
-                      }`}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-                {freshMarketProducts.map((product) => (
-                  <ProductCard
-                    key={product.id}
-                    product={product}
-                    quantity={cart[product.id] || 0}
-                    isWishlisted={wishlist.includes(product.id)}
-                    onAdd={handleAddToCart}
-                    onUpdateQty={handleUpdateQty}
-                    onToggleWishlist={handleToggleWishlist}
-                    onOpenDetail={setSelectedProduct}
-                  />
-                ))}
-              </div>
-            </section>
-
-            {/* 6. PANTRY, DRINKS & HOUSEHOLD ESSENTIALS */}
-            <section aria-label="Pantry and Household">
-              <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3 mb-4">
-                <div>
-                  <h2 className="text-xl sm:text-2xl font-extrabold text-[#1A1D23] tracking-tight">
-                    Pantry, Drinks &amp; Everyday Household
-                  </h2>
-                  <p className="text-xs sm:text-sm text-[#5A6270] mt-0.5">
-                    Stock up on Thai fragrant rice, local drinks, and household value packs
-                  </p>
-                </div>
-                <div className="flex items-center gap-1 p-1 bg-white border border-[#E5E8EE] rounded-lg overflow-x-auto no-scrollbar">
-                  {[
-                    { id: 'all', label: 'All Essentials' },
-                    { id: 'rice-noodles-cooking', label: 'Rice & Cooking' },
-                    { id: 'drinks', label: 'Drinks' },
-                    { id: 'household', label: 'Household' },
-                  ].map((tab) => (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      onClick={() => setPantryTab(tab.id as typeof pantryTab)}
-                      className={`px-3 py-1.5 rounded-md text-xs font-bold transition-colors whitespace-nowrap shrink-0 ${
-                        pantryTab === tab.id
-                          ? 'bg-[#0F766E] text-white'
-                          : 'text-[#4B5563] hover:text-[#0F766E]'
-                      }`}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-                {pantryProducts.map((product) => (
-                  <ProductCard
-                    key={product.id}
-                    product={product}
-                    quantity={cart[product.id] || 0}
-                    isWishlisted={wishlist.includes(product.id)}
-                    onAdd={handleAddToCart}
-                    onUpdateQty={handleUpdateQty}
-                    onToggleWishlist={handleToggleWishlist}
-                    onOpenDetail={setSelectedProduct}
-                  />
-                ))}
-              </div>
-            </section>
+            {/* 6. ONE CLEAN CONSOLIDATED CATALOG (Replaces 4+ Redundant Homepage Carousels) */}
+            {(activeIntent === 'meal-planner' || activeIntent === 'vouchers') && (
+              <section aria-label="Browse Everyday Groceries" className="pt-4 border-t border-[#E5E8EE]">
+                <ConsolidatedProductGrid
+                  title="Everyday Essentials"
+                  subtitle="Bestsellers, top-rated picks, and dietary favourites consolidated into one filterable aisle"
+                  products={PRODUCTS}
+                  cart={cart}
+                  wishlist={wishlist}
+                  pantryIds={pantryIds}
+                  defaultFilter="bestsellers"
+                  onAdd={handleAddToCart}
+                  onUpdateQty={handleUpdateQty}
+                  onToggleWishlist={handleToggleWishlist}
+                  onOpenDetail={setSelectedProduct}
+                />
+              </section>
+            )}
           </div>
         )}
 
-        {(activePage === 'category' ||
-          activePage === 'search' ||
-          activePage === 'promotions' ||
-          activePage === 'must-buy' ||
-          activePage === 'price-drop' ||
-          activePage === 'wishlist') && (
+        {(activePage === 'category' || activePage === 'search') && (
           <CatalogView
             mode={activePage}
             categoryId={activeCategory}
             searchQuery={searchQuery}
             cart={cart}
             wishlist={wishlist}
+            pantryIds={pantryIds}
             onAdd={handleAddToCart}
             onUpdateQty={handleUpdateQty}
             onToggleWishlist={handleToggleWishlist}
-            onOpenDetail={setSelectedProduct}
-            onNavigate={handleNavigate}
-          />
-        )}
-
-        {activePage === 'weekly-ads' && (
-          <WeeklyAdsView
-            cart={cart}
-            wishlist={wishlist}
-            onAdd={handleAddToCart}
-            onUpdateQty={handleUpdateQty}
-            onToggleWishlist={handleToggleWishlist}
-            onOpenDetail={setSelectedProduct}
-            onNavigate={handleNavigate}
-          />
-        )}
-
-        {activePage === 'recipes' && (
-          <RecipesView
-            onAddMultiple={handleAddMultiple}
             onOpenDetail={setSelectedProduct}
             onNavigate={handleNavigate}
           />
@@ -637,8 +637,44 @@ export default function App() {
 
       <Footer
         onNavigate={handleNavigate}
+        onSelectIntent={(intent) => handleSelectIntent(intent, true)}
         onOpenStoreLocator={() => setStoreLocatorOpen(true)}
         onOpenAccount={() => setAccountModalOpen(true)}
+      />
+
+      {/* Smart Shopping List & Pantry Drawer */}
+      <ShoppingListDrawer
+        open={shoppingListOpen}
+        initialTab={shoppingListTab}
+        onClose={() => setShoppingListOpen(false)}
+        mealPlan={mealPlan}
+        pantryIds={pantryIds}
+        wishlist={wishlist}
+        onUpdateMealServings={handleUpdateMealServings}
+        onRemoveMeal={handleRemoveMeal}
+        onTogglePantry={handleTogglePantry}
+        onAddItemsToCart={handleAddItemsToCart}
+        onAddSingleProduct={handleAddToCart}
+        onToggleWishlist={handleToggleWishlist}
+        onShareFeedback={showToast}
+      />
+
+      {/* Interactive Recipe Detail, Portion Control & Pantry Check Modal */}
+      <RecipeDetailModal
+        recipe={selectedRecipeState?.recipe ?? null}
+        initialServings={selectedRecipeState?.servings}
+        isPlanned={
+          selectedRecipeState
+            ? mealPlan.some((m) => m.recipeId === selectedRecipeState.recipe.id)
+            : false
+        }
+        pantryIds={pantryIds}
+        onClose={() => setSelectedRecipeState(null)}
+        onTogglePantry={handleTogglePantry}
+        onToggleMealInPlan={handleToggleMealInPlan}
+        onAddItemsToCart={handleAddItemsToCart}
+        onAddSingleProduct={handleAddToCart}
+        onShareFeedback={showToast}
       />
 
       {/* Slide-Over Cart Drawer */}
@@ -665,6 +701,7 @@ export default function App() {
         isSignedIn={isSignedIn}
         linkpoints={linkpoints}
         isDigitalClub={isDigitalClub}
+        externalVoucherCode={activeVoucherCode}
       />
 
       {/* Product Detail Modal */}
@@ -738,12 +775,12 @@ export default function App() {
         orderHistory={orderHistory}
       />
 
-      {/* Subtle Toast Feedback */}
+      {/* Toast Feedback */}
       {toastMessage && (
         <div
           role="status"
           aria-live="polite"
-          className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-lg bg-[#134E4A] text-white text-xs font-bold shadow-xl flex items-center gap-2 whitespace-nowrap"
+          className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-lg bg-[#134E4A] text-white text-xs font-bold shadow-xl flex items-center gap-2 whitespace-nowrap max-w-[92vw] truncate"
         >
           <span>{toastMessage}</span>
         </div>

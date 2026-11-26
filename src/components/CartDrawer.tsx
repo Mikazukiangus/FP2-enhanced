@@ -40,6 +40,7 @@ interface CartDrawerProps {
   isSignedIn: boolean;
   linkpoints: number;
   isDigitalClub: boolean;
+  externalVoucherCode?: string | null;
 }
 
 const FREE_DELIVERY_THRESHOLD = 59;
@@ -58,11 +59,20 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
   isSignedIn,
   linkpoints,
   isDigitalClub,
+  externalVoucherCode,
 }) => {
   const [promoInput, setPromoInput] = useState('');
   const [appliedPromo, setAppliedPromo] = useState<string | null>(null);
   const [promoError, setPromoError] = useState<string | null>(null);
   const [redeemLinkpoints, setRedeemLinkpoints] = useState(false);
+
+  React.useEffect(() => {
+    if (externalVoucherCode) {
+      setAppliedPromo(externalVoucherCode);
+      setPromoInput(externalVoucherCode);
+      setPromoError(null);
+    }
+  }, [externalVoucherCode]);
 
   if (!open) return null;
 
